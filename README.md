@@ -1,51 +1,42 @@
-# FlowPilot
+# Traffic Redirect (Vercel + Upstash Redis)
 
-Enterprise Browser Automation & Website Testing Platform — desktop-first, cloud-optional.
+Public host for monetized redirect links. New visitors see a short "loading"
+interstitial (with your Adsterra ad) before continuing to your destination;
+returning visitors pass straight through.
 
-See the full design in [docs/BLUEPRINT.md](docs/BLUEPRINT.md), the decision records in
-[docs/adr/](docs/adr/), and the current milestone scope in
-[docs/PHASE1_BUILD_SPEC.md](docs/PHASE1_BUILD_SPEC.md).
+## What each part does
 
-## Monorepo layout
-
-| Path | What |
+| Path | Role |
 |---|---|
-| `apps/desktop` | Electron app (main / preload / renderer) |
-| `shared/ipc-contracts` | Typed renderer↔main channel contract (build-first) |
-| `shared/errors`, `shared/logger` | Cross-cutting: typed errors, structured logging |
-| `packages/core-domain` | Pure domain + Scenario JSON v1 schema (no I/O) |
-| `packages/data-access` | Drizzle schema, repositories, migrations (SQLite→Postgres) |
-| `packages/core-services` | Framework-agnostic use-cases (reused by future cloud API) |
+| `/` (`public/index.html`) | Admin page — create / list / delete links (token-gated) |
+| `/api/create` | Create a link (needs `x-admin-token`) |
+| `/api/list`, `/api/delete` | Manage links (token-gated) |
+| `/:slug` | Public short link → interstitial (new visitor) or 302 (returning) |
+| `/:slug/go` | Continue → sets cookie, 302 to destination |
+| `/:slug/adview` | Beacon that counts a rendered script ad |
 
-## Prerequisites
+Storage is Upstash Redis (serverless has no persistent disk, so no file store).
 
-- Node.js ≥ 20.11
-- pnpm 9 (`corepack enable && corepack prepare pnpm@9.12.0 --activate`)
+## Deploy to Vercel
 
-## Quickstart
+1. **Push to GitHub** (this repo).
+2. **Create an Upstash Redis database** — at [upstash.com](https://upstash.com),
+   create a Redis DB, and from its **REST API** section copy the **URL** and **TOKEN**.
+3. **Import the repo in Vercel** — New Project → pick this repo. No Root Directory
+   change needed (the app is at the root). Framework preset: **Other**.
+4. **Set Environment Variables** (Project → Settings → Environment Variables):
+   - `ADMIN_TOKEN` — a secret you choose; required to create links.
+   - `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
+     (the code also accepts `KV_REST_API_URL` / `KV_REST_API_TOKEN`).
+5. **Deploy.** Open `https://<your-app>.vercel.app/`, enter your `ADMIN_TOKEN`,
+   and create a link. Its public URL is `https://<your-app>.vercel.app/<slug>`.
 
-```bash
-pnpm install            # install all workspaces
-pnpm db:generate        # generate the first SQLite migration from the schema
-pnpm db:migrate         # apply it to ./.flowpilot-data/flowpilot.sqlite
-pnpm dev                # launch the Electron app (walking skeleton)
-```
+## Custom domain
 
-Then create a project in the window — that exercises the full
-renderer → preload → main → zod-validate round-trip.
+Vercel → Project → Settings → Domains → add your domain. Generated links then use
+it automatically (the base URL is derived from the request host).
 
-## Useful scripts
+---
 
-| Command | Effect |
-|---|---|
-| `pnpm typecheck` | Type-check every package (Turbo-cached) |
-| `pnpm build` | Build all packages + the desktop bundle |
-| `pnpm test` | Run unit/integration tests |
-| `pnpm --filter @flowpilot/desktop package` | Produce a signed installer (needs signing config) |
-
-## Architectural guardrails (do not violate)
-
-- `core-services` and `core-domain` must **never** import `electron` — enforced by lint (ADR 0004, blueprint rec #8).
-- All DB access goes through repository interfaces (ADR 0003).
-- Every tenant-scoped query carries `team_id` (ADR 0005).
-- Every IPC payload is validated against `@flowpilot/ipc-contracts` on both sides.
+`docs/` contains the original FlowPilot design blueprint (kept for reference; not
+part of the deployed app).
