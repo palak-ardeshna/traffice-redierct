@@ -13,6 +13,7 @@ import { getConfig, bump, logEvent } from '../lib/store.js';
 import { renderInterstitial } from '../lib/interstitial.js';
 import { issueToken, verifyToken } from '../lib/token.js';
 import { allow, clientIp } from '../lib/ratelimit.js';
+import { readCookie } from '../lib/cookies.js';
 
 const SEEN_DAYS = Number(process.env.SEEN_DAYS ?? 7);
 
@@ -26,17 +27,6 @@ const ADVIEW_MIN_AGE = 2;
  */
 const BOT_UA =
   /bot|crawl|spider|slurp|bingpreview|facebookexternalhit|whatsapp|telegram|discord|slackbot|twitterbot|linkedinbot|embedly|curl|wget|python-requests|go-http-client|headless|lighthouse|preview/i;
-
-function readCookie(req, name) {
-  const raw = req.headers.cookie;
-  if (!raw) return null;
-  for (const part of raw.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
-  }
-  return null;
-}
 
 function redirectTo(res, url) {
   // A 302 carrying Set-Cookie must never be stored by a shared cache.

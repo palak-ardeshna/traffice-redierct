@@ -11,6 +11,10 @@
   body { font: 15px/1.55 system-ui, sans-serif; background: #0f1115; color: #e8eaed; margin: 0; padding: 2rem 1rem; }
   .wrap { max-width: 680px; margin: 0 auto; }
   h1 { font-size: 1.4rem; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  button.ghost { background: transparent; border: 1px solid #2a2e37; color: #9aa0aa; }
+  button.ghost:hover { color: #e8eaed; border-color: #3a3f4a; }
+  [hidden] { display: none !important; }
   .card { background: #1a1d23; border: 1px solid #2a2e37; border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; }
   label { display: block; margin: 1rem 0 .35rem; font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .5px; color: #9aa0aa; }
   input, textarea { width: 100%; padding: .6rem .7rem; font: inherit; color: #e8eaed; background: #23272f; border: 1px solid #2a2e37; border-radius: 8px; }
@@ -33,12 +37,24 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>🔗 Link Manager</h1>
+  <div class="head">
+    <h1>🔗 Link Manager</h1>
+    <button class="sm ghost" id="signout" onclick="logout()" hidden>Sign out</button>
+  </div>
 
-  <div class="card">
+  <!-- Shown only until you sign in. The token is exchanged for an HttpOnly cookie and
+       never stored in JS-readable storage: the interstitials run third-party ad scripts
+       on this same origin, and localStorage would be readable by them. -->
+  <div class="card" id="login" hidden>
     <label>Admin token</label>
-    <input type="password" id="token" placeholder="ADMIN_TOKEN (set in Vercel env vars)">
+    <input type="password" id="token" placeholder="ADMIN_TOKEN (set in Vercel env vars)"
+           autocomplete="current-password" onkeydown="if(event.key==='Enter')login()">
+    <button onclick="login()">Sign in</button>
+    <div id="loginMsg" class="msg"></div>
+    <p class="d" style="margin-top:1rem">Stays signed in for 30 days on this browser.</p>
+  </div>
 
+  <div class="card" id="createCard" hidden>
     <label>Destination URL (your website)</label>
     <input type="url" id="destUrl" placeholder="https://store.example.com/page">
 
@@ -63,68 +79,112 @@
     <div id="msg" class="msg"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="listCard" hidden>
     <h1 style="font-size:1.1rem;margin-top:0">Your links</h1>
-    <div id="links"><p class="d">Enter your token and click Refresh.</p></div>
+    <div id="links"><p class="d">Loading&hellip;</p></div>
     <button class="sm" onclick="refresh()">Refresh</button>
   </div>
 </div>
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const token = () => $('token').value.trim();
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // No token is ever held in JS. /api/login exchanges it for an HttpOnly cookie, which
+  // the browser attaches automatically (fetch sends same-origin cookies by default).
+  const api = (path, body) =>
+    fetch(path, body === undefined
+      ? {}
+      : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  function showApp(signedIn) {
+    $('login').hidden = signedIn;
+    $('createCard').hidden = !signedIn;
+    $('listCard').hidden = !signedIn;
+    $('signout').hidden = !signedIn;
+  }
+
+  async function login() {
+    const msg = $('loginMsg');
+    msg.className = 'msg';
+    const res = await api('/api/login', { token: $('token').value.trim() });
+    if (!res.ok) {
+      const { error } = await res.json().catch(() => ({}));
+      msg.className = 'msg err';
+      msg.textContent = error || 'Sign in failed';
+      return;
+    }
+    $('token').value = '';
+    showApp(true);
+    refresh();
+  }
+
+  async function logout() {
+    await api('/api/logout', {});
+    showApp(false);
+  }
 
   async function create() {
     const msg = $('msg');
     msg.className = 'msg';
-    const res = await fetch('/api/create', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-admin-token': token() },
-      body: JSON.stringify({
-        destUrl: $('destUrl').value.trim(),
-        adScript: $('adScript').value.trim() || undefined,
-        adDirectUrl: $('adDirectUrl').value.trim() || undefined,
-        title: $('title').value.trim() || undefined,
-        delaySeconds: Number($('delaySeconds').value),
-      }),
+    const res = await api('/api/create', {
+      destUrl: $('destUrl').value.trim(),
+      adScript: $('adScript').value.trim() || undefined,
+      adDirectUrl: $('adDirectUrl').value.trim() || undefined,
+      title: $('title').value.trim() || undefined,
+      delaySeconds: Number($('delaySeconds').value),
     });
+    if (res.status === 401) return showApp(false);
     const data = await res.json();
     if (!res.ok) { msg.className = 'msg err'; msg.textContent = data.error || 'Failed'; return; }
     msg.className = 'msg ok';
-    msg.innerHTML = 'Created: <code>' + data.shortUrl + '</code>';
+    msg.innerHTML = 'Created: <code>' + esc(data.shortUrl) + '</code>';
     $('destUrl').value = ''; $('adScript').value = ''; $('adDirectUrl').value = '';
     refresh();
   }
 
   async function refresh() {
     const box = $('links');
-    const res = await fetch('/api/list', { headers: { 'x-admin-token': token() } });
-    if (!res.ok) { box.innerHTML = '<p class="d">Bad token.</p>'; return; }
+    const res = await api('/api/list');
+    if (res.status === 401) return showApp(false);
+    if (!res.ok) { box.innerHTML = '<p class="d">Could not load links.</p>'; return; }
+
     const { baseUrl, links } = await res.json();
     if (!links.length) { box.innerHTML = '<p class="d">No links yet.</p>'; return; }
+
+    // Escaped, and no user data interpolated into an onclick attribute.
     box.innerHTML = links.map((l) => {
       const url = baseUrl + '/' + l.slug;
-      return '<div class="link"><div class="u">' + url + '</div>' +
-        '<div class="d">→ ' + l.destUrl + '</div>' +
-        '<div class="d">' + l.clicks + ' clicks · ' + l.uniqueVisitors + ' new · ' +
-          l.adScriptViews + ' ad impressions · ' + l.directLinkClicks + ' direct opens</div>' +
+      return '<div class="link"><div class="u">' + esc(url) + '</div>' +
+        '<div class="d">&rarr; ' + esc(l.destUrl) + '</div>' +
+        '<div class="d">' + l.clicks + ' clicks &middot; ' + l.uniqueVisitors + ' new &middot; ' +
+          l.adScriptViews + ' ad impressions &middot; ' + l.directLinkClicks + ' direct opens</div>' +
         '<div class="actions">' +
-        '<button class="sm" onclick="copy(\'' + url + '\')">Copy</button>' +
-        '<button class="sm del" onclick="del(\'' + l.slug + '\')">Delete</button>' +
+        '<button class="sm" data-copy="' + esc(url) + '">Copy</button>' +
+        '<button class="sm del" data-del="' + esc(l.slug) + '">Delete</button>' +
         '</div></div>';
     }).join('');
   }
 
-  function copy(url) { navigator.clipboard.writeText(url); }
+  $('links').addEventListener('click', async (e) => {
+    const copyUrl = e.target.dataset.copy;
+    if (copyUrl) { navigator.clipboard.writeText(copyUrl); e.target.textContent = 'Copied'; return; }
 
-  async function del(slug) {
-    await fetch('/api/delete', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-admin-token': token() },
-      body: JSON.stringify({ slug }),
-    });
+    const slug = e.target.dataset.del;
+    if (!slug) return;
+    if (!confirm('Delete this link? Anyone who already has it will get a 404.')) return;
+    const res = await api('/api/delete', { slug });
+    if (res.status === 401) return showApp(false);
     refresh();
-  }
+  });
+
+  // Probe the session on load: if the cookie is still good, skip the token prompt.
+  (async () => {
+    const res = await api('/api/list');
+    showApp(res.ok);
+    if (res.ok) refresh();
+  })();
 </script>
 </body>
 </html>

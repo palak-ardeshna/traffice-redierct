@@ -114,22 +114,28 @@ URL — see [Environment variables](#environment-variables).
 traffic/
 ├── api/                    Vercel serverless functions (one file = one endpoint)
 │   ├── handler.js          Public redirect: /:slug, /:slug/go, /:slug/adview
-│   ├── create.js           POST — create a link          (admin token required)
-│   ├── list.js             GET  — list links + counters  (admin token required)
-│   └── delete.js           POST — delete a link          (admin token required)
+│   ├── login.js            POST — exchange the admin token for a session cookie
+│   ├── logout.js           POST — clear the session cookie
+│   ├── create.js           POST — create a link          (admin only)
+│   ├── list.js             GET  — list links + counters  (admin only)
+│   └── delete.js           POST — delete a link          (admin only)
 │
 ├── lib/                    Shared logic, imported by the api/ handlers
 │   ├── store.js            All Redis access + URL validation + slug generation
 │   ├── interstitial.js     Renders the loading page HTML (a template function)
 │   ├── token.js            Signed, time-bound tokens that make the countdown real
-│   ├── auth.js             Admin-token check (constant-time) + rate limit
-│   └── ratelimit.js        Fixed-window Redis rate limiter (fails open)
+│   ├── session.js          HttpOnly admin session cookie (sign in once)
+│   ├── auth.js             Session-or-header check (constant-time) + rate limit
+│   ├── ratelimit.js        Fixed-window Redis rate limiter (fails open)
+│   └── cookies.js          Cookie reader + forwarded-proto check
 │
 ├── public/
 │   └── index.html          Admin UI — create / list / delete links. Served at /
 │
-├── test/                   node:test suite — `npm test`
+├── test/                   node:test suite — `npm test` (53 tests, no Redis needed)
 │   ├── token.test.mjs
+│   ├── session.test.mjs
+│   ├── auth.test.mjs
 │   ├── interstitial.test.mjs
 │   └── handler.test.mjs    End-to-end, against an in-memory Redis stub
 │
@@ -151,7 +157,8 @@ traffic/
 | [lib/store.js](lib/store.js) | `createLink`, `getConfig`, `listLinks`, `deleteLink`, `bump`, `logEvent`, `validateUrl`, `redis`. Holds the singleton `ioredis` client on `globalThis.__redis` so warm serverless invocations reuse one TCP connection. Memoizes `slug → config` per instance and serves stale on a Redis outage. |
 | [lib/interstitial.js](lib/interstitial.js) | `renderInterstitial(link, token)` → a complete HTML document string. Escapes all interpolated text; the countdown, progress bar, and adview beacon are inline JS. |
 | [lib/token.js](lib/token.js) | `issueToken(slug)` / `verifyToken(slug, token, minAgeSeconds)`. HMAC-signed, carries its issue time, expires after 15 min. Stateless — no Redis round trip. |
-| [lib/auth.js](lib/auth.js) | `requireAdmin(req, res)` — constant-time token compare plus a 20 req/min per-IP limit. |
+| [lib/session.js](lib/session.js) | `setSessionCookie`, `hasValidSession`, `clearSessionCookie`. The cookie holds `<expiry>.<hmac(expiry)>` — no secret material. Rotating `ADMIN_TOKEN` invalidates every session for free. |
+| [lib/auth.js](lib/auth.js) | `requireAdmin(req, res)` — accepts a session cookie *or* an `x-admin-token` header, both behind a 60 req/min per-IP limit. Constant-time compare. |
 | [lib/ratelimit.js](lib/ratelimit.js) | `allow(key, max, windowSeconds)`. Fixed window in Redis. Fails **open** — a limiter outage must never take down the redirect path. |
 | [api/handler.js](api/handler.js) | Reads `?slug` and `?action` (populated by the rewrites), looks up the link, and branches: `adview` → `204`, `go` → verify token, set cookie, `302`; default → interstitial or `302`. Skips all counting for bots. |
 | [api/create.js](api/create.js) | Checks `x-admin-token`, calls `createLink`, derives the short URL from `x-forwarded-host` / `x-forwarded-proto` so it works on any custom domain. |
@@ -180,6 +187,7 @@ Vercel maps pretty URLs onto the single public handler via
 | `/:slug` | `/api/handler?slug=:slug` | Interstitial (new) or `302` (returning). Issues a `gt_<slug>` token cookie. |
 | `/:slug/go` | `/api/handler?slug=:slug&action=go` | **Requires a valid token at least `delaySeconds` old.** Otherwise bounces back to `/:slug`. |
 | `/:slug/adview` | `/api/handler?slug=:slug&action=adview` | **Requires a valid token ≥2s old**, POST, and passes a rate limit. Always `204`. |
+| `/api/login`, `/api/logout` | (direct) | Session cookie in / out |
 | `/api/*` | (direct) | Admin JSON API |
 
 The token rides in both a `gt_<slug>` cookie and a `?t=` query param. The cookie is the
@@ -220,8 +228,32 @@ Slugs are 7 chars of `base64url` from `crypto.randomBytes(5)`, claimed atomicall
 
 ## API reference
 
-All admin endpoints require the header `x-admin-token: <ADMIN_TOKEN>`.
-They return `401` otherwise.
+Admin endpoints accept **either** a session cookie (what the admin page uses) **or** an
+`x-admin-token: <ADMIN_TOKEN>` header (what `curl` uses). They return `401` otherwise, and
+`429` past 60 requests/minute from one IP.
+
+### `POST /api/login`
+
+```jsonc
+// request  → { "token": "<ADMIN_TOKEN>" }
+// response → { "ok": true }
+// + Set-Cookie: admin_session=...; HttpOnly; SameSite=Strict; Path=/api; Secure
+```
+
+Exchanges the token for a 30-day `HttpOnly` cookie, so you type the token once per
+browser. Rate limited to 5 attempts/minute per IP. Returns `401 { "error": "wrong token" }`.
+
+**Why a cookie and not `localStorage`:** the admin page and the interstitials share one
+origin, and the interstitials inject the ad network's `<script>` raw. Anything in
+`localStorage` on that origin is readable by that third-party script — including a token
+that grants full create/list/delete. An `HttpOnly` cookie is not readable by any
+JavaScript. `Path=/api` also keeps it off interstitial requests entirely.
+
+### `POST /api/logout`
+
+```jsonc
+// response → { "ok": true }   // + expires the cookie
+```
 
 ### `POST /api/create`
 
@@ -282,7 +314,8 @@ Set both in **Vercel → Project → Settings → Environment Variables**.
 |---|---|---|
 | `ADMIN_TOKEN` | yes | Shared secret gating the admin page and all `/api/*` endpoints. Pick something long and random. |
 | `REDIS_URL` | yes | Railway Redis connection URL. **Must be the public proxy URL.** |
-| `GO_SECRET` | no | HMAC key for the `/go` tokens. Falls back to `ADMIN_TOKEN`. Set it separately if you ever rotate the admin token without invalidating in-flight interstitials. |
+| `GO_SECRET` | no | HMAC key for the `/go` tokens and admin sessions. Falls back to `ADMIN_TOKEN`. Set it separately if you ever rotate the admin token without invalidating in-flight interstitials. |
+| `SESSION_DAYS` | no | How long an admin stays signed in. Default `30`. |
 | `SEEN_DAYS` | no | How long a visitor skips the interstitial. Default `7`. **This is a direct revenue knob** — a returning visitor inside the window earns nothing. |
 
 > ⚠️ **Use `REDIS_PUBLIC_URL`, not `REDIS_URL`, from Railway.**
@@ -332,7 +365,7 @@ from the request's `x-forwarded-host` header rather than a hardcoded constant.
 
 ```bash
 npm install
-npm test            # 33 tests, no Redis or network needed
+npm test            # 53 tests, no Redis or network needed
 ```
 
 The suite stubs Redis on `globalThis.__redis` and drives the real handler, so it covers
@@ -368,8 +401,15 @@ A local Redis is enough for everything except testing against real ad tags.
 - **Ad-gate integrity.** `/go` and `/adview` require an HMAC-signed token issued when
   the interstitial was rendered, and check that enough wall-clock time has elapsed.
   A token expires after 15 minutes and is bound to its slug.
-- **Auth.** A single shared bearer token, compared in constant time, behind a 20 req/min
-  per-IP limit. Adequate for a one-operator tool; not a multi-user auth system.
+- **Auth.** A single shared bearer token, compared in constant time, behind a per-IP rate
+  limit (60/min general, 5/min on `/api/login`). Adequate for a one-operator tool; not a
+  multi-user auth system.
+- **The admin token never enters JavaScript.** `POST /api/login` exchanges it for an
+  `HttpOnly; SameSite=Strict; Path=/api` cookie. This matters *specifically here*: the
+  admin page and the interstitials share one origin, and the interstitials run the ad
+  network's script raw. `localStorage` on that origin would be readable by that ad
+  script; an `HttpOnly` cookie is not. `SameSite=Strict` covers CSRF, and `Path=/api`
+  means the cookie is never even transmitted on an interstitial request.
 - **Cookies.** `seen_<slug>` and `gt_<slug>` are `HttpOnly; SameSite=Lax; Path=/`. They
   are *not* `Secure`, since Vercel terminates TLS upstream; every real request arrives
   over HTTPS anyway. Responses carrying `Set-Cookie` are `private, no-store` so a shared
