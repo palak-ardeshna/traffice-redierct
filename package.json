@@ -3,11 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Monetized redirect links — always-on server with file store (Railway/VPS)",
-  "engines": {
-    "node": ">=18"
-  },
-  "scripts": {
-    "start": "node server.js"
+  "description": "Monetized redirect links — Vercel serverless app + Railway Redis",
+  "dependencies": {
+    "ioredis": "^5.4.1"
   }
 }
