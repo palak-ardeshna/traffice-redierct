@@ -1,4 +1,7 @@
 {
+  "framework": null,
+  "buildCommand": "echo no build needed",
+  "outputDirectory": "public",
   "rewrites": [
     { "source": "/:slug/go", "destination": "/api/handler?slug=:slug&action=go" },
     { "source": "/:slug/adview", "destination": "/api/handler?slug=:slug&action=adview" },
