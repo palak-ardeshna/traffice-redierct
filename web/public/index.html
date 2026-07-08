@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Link Manager</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.55 system-ui, sans-serif; background: #0f1115; color: #e8eaed; margin: 0; padding: 2rem 1rem; }
+  .wrap { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; }
+  .card { background: #1a1d23; border: 1px solid #2a2e37; border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  label { display: block; margin: 1rem 0 .35rem; font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .5px; color: #9aa0aa; }
+  input, textarea { width: 100%; padding: .6rem .7rem; font: inherit; color: #e8eaed; background: #23272f; border: 1px solid #2a2e37; border-radius: 8px; }
+  textarea { font-family: ui-monospace, monospace; font-size: .82rem; min-height: 80px; }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button { margin-top: 1rem; padding: .7rem 1.2rem; font: 600 .95rem system-ui; color: #fff; background: #6366f1; border: 0; border-radius: 8px; cursor: pointer; }
+  button.sm { margin: 0; padding: .5rem .8rem; font-size: .8rem; }
+  button.del { background: #ef4444; }
+  .msg { margin-top: 1rem; padding: .8rem; border-radius: 8px; font-size: .9rem; display: none; }
+  .msg.err { display: block; background: #3a1a1a; color: #fca5a5; }
+  .msg.ok { display: block; background: #16281f; color: #86efac; word-break: break-all; }
+  .link { border-top: 1px solid #2a2e37; padding: 1rem 0; }
+  .link:first-child { border-top: 0; }
+  .u { font-weight: 600; word-break: break-all; }
+  .d { font-size: .8rem; color: #9aa0aa; word-break: break-all; margin: 4px 0; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  code { background: #23272f; padding: .2rem .4rem; border-radius: 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔗 Link Manager</h1>
+
+  <div class="card">
+    <label>Admin token</label>
+    <input type="password" id="token" placeholder="ADMIN_TOKEN (set in Vercel env vars)">
+
+    <label>Destination URL (your website)</label>
+    <input type="url" id="destUrl" placeholder="https://store.example.com/page">
+
+    <label>Adsterra ad script(s) — shown during the wait</label>
+    <textarea id="adScript" placeholder="Paste Social Bar / Banner / Popunder tag(s). Optional if you use a Direct Link."></textarea>
+
+    <label>Adsterra Direct Link — opens in a new tab on Continue</label>
+    <input type="url" id="adDirectUrl" placeholder="https://www.effectiveratecpm.com/... (optional)">
+
+    <div class="row">
+      <div>
+        <label>Page title</label>
+        <input type="text" id="title" value="Preparing your link">
+      </div>
+      <div style="max-width:120px">
+        <label>Wait (sec)</label>
+        <input type="number" id="delaySeconds" value="5" min="0" max="30">
+      </div>
+    </div>
+
+    <button onclick="create()">Create link</button>
+    <div id="msg" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <h1 style="font-size:1.1rem;margin-top:0">Your links</h1>
+    <div id="links"><p class="d">Enter your token and click Refresh.</p></div>
+    <button class="sm" onclick="refresh()">Refresh</button>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const token = () => $('token').value.trim();
+
+  async function create() {
+    const msg = $('msg');
+    msg.className = 'msg';
+    const res = await fetch('/api/create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-token': token() },
+      body: JSON.stringify({
+        destUrl: $('destUrl').value.trim(),
+        adScript: $('adScript').value.trim() || undefined,
+        adDirectUrl: $('adDirectUrl').value.trim() || undefined,
+        title: $('title').value.trim() || undefined,
+        delaySeconds: Number($('delaySeconds').value),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.className = 'msg err'; msg.textContent = data.error || 'Failed'; return; }
+    msg.className = 'msg ok';
+    msg.innerHTML = 'Created: <code>' + data.shortUrl + '</code>';
+    $('destUrl').value = ''; $('adScript').value = ''; $('adDirectUrl').value = '';
+    refresh();
+  }
+
+  async function refresh() {
+    const box = $('links');
+    const res = await fetch('/api/list', { headers: { 'x-admin-token': token() } });
+    if (!res.ok) { box.innerHTML = '<p class="d">Bad token.</p>'; return; }
+    const { baseUrl, links } = await res.json();
+    if (!links.length) { box.innerHTML = '<p class="d">No links yet.</p>'; return; }
+    box.innerHTML = links.map((l) => {
+      const url = baseUrl + '/' + l.slug;
+      return '<div class="link"><div class="u">' + url + '</div>' +
+        '<div class="d">→ ' + l.destUrl + '</div>' +
+        '<div class="d">' + l.clicks + ' clicks · ' + l.uniqueVisitors + ' new · ' + l.adViews + ' ad views</div>' +
+        '<div class="actions">' +
+        '<button class="sm" onclick="copy(\'' + url + '\')">Copy</button>' +
+        '<button class="sm del" onclick="del(\'' + l.slug + '\')">Delete</button>' +
+        '</div></div>';
+    }).join('');
+  }
+
+  function copy(url) { navigator.clipboard.writeText(url); }
+
+  async function del(slug) {
+    await fetch('/api/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-token': token() },
+      body: JSON.stringify({ slug }),
+    });
+    refresh();
+  }
+</script>
+</body>
+</html>

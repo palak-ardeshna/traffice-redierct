@@ -1,0 +1,645 @@
+openapi: 3.1.0
+info:
+  title: FlowPilot API
+  version: "1.0.0"
+  description: >
+    REST surface for the FlowPilot browser automation & website-testing platform.
+    The same service layer powers local IPC (renderer↔main), the embedded local
+    REST server (bound to 127.0.0.1), and the future multi-tenant cloud API.
+    All tenant-scoped resources are isolated by team_id (see ADR 0005).
+  contact:
+    name: FlowPilot Engineering
+    url: https://docs.flowpilot.app
+servers:
+  - url: http://127.0.0.1:{port}/v1
+    description: Embedded local API (desktop)
+    variables:
+      port:
+        default: "47100"
+  - url: https://api.flowpilot.app/v1
+    description: Cloud API (future SaaS)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Projects
+  - name: Scenarios
+  - name: Runs
+  - name: Reports
+  - name: Schedules
+  - name: AI
+  - name: Plugins
+
+paths:
+  /projects:
+    get:
+      tags: [Projects]
+      summary: List projects
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: environment
+          in: query
+          schema: { type: string, enum: [prod, staging, local, custom] }
+        - name: sort
+          in: query
+          schema: { type: string, example: "-createdAt" }
+      responses:
+        "200":
+          description: Paginated project list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectPage"
+    post:
+      tags: [Projects]
+      summary: Create project
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectEnvelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /projects/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [Projects]
+      summary: Get project
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Projects]
+      summary: Update project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectUpdate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Projects]
+      summary: Soft-delete project
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/scenarios:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [Scenarios]
+      summary: List scenarios in a project
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: type
+          in: query
+          schema: { type: string, enum: [test, audit, crawl, screenshot, composite] }
+      responses:
+        "200":
+          description: Paginated scenarios
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScenarioPage" }
+
+  /scenarios:
+    post:
+      tags: [Scenarios]
+      summary: Create scenario (with initial version)
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScenarioCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScenarioEnvelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /scenarios/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [Scenarios]
+      summary: Get scenario with current version
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScenarioEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /scenarios/{id}/versions:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [Scenarios]
+      summary: Create a new immutable scenario version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [definition]
+              properties:
+                definition: { $ref: "#/components/schemas/ScenarioDefinition" }
+      responses:
+        "201":
+          description: New version
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScenarioVersionEnvelope" }
+
+  /runs:
+    post:
+      tags: [Runs]
+      summary: Trigger a run
+      parameters: [ { $ref: "#/components/parameters/IdempotencyKey" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunCreate" }
+      responses:
+        "202":
+          description: Accepted and queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunEnvelope" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /runs/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [Runs]
+      summary: Get run status + summary
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /runs/{id}/events:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [Runs]
+      summary: Server-Sent Events stream of live run events
+      description: >
+        Emits `step`, `log`, and `run.completed` events as text/event-stream.
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /runs/{id}/logs:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [Runs]
+      summary: Paginated run logs
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: source
+          in: query
+          schema: { type: string, enum: [app, automation, browser, network, console, crash] }
+        - name: level
+          in: query
+          schema: { type: string, enum: [debug, info, warn, error, fatal] }
+      responses:
+        "200":
+          description: Log page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogPage" }
+
+  /runs/{id}/performance:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [Runs]
+      summary: Performance metrics for a run
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/PerformanceMetric" }
+
+  /reports:
+    post:
+      tags: [Reports]
+      summary: Generate a report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReportCreate" }
+      responses:
+        "202":
+          description: Report generation queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportEnvelope" }
+
+  /schedules:
+    get:
+      tags: [Schedules]
+      summary: List schedules
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SchedulePage" }
+    post:
+      tags: [Schedules]
+      summary: Create schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScheduleEnvelope" }
+
+  /ai/analyze:
+    post:
+      tags: [AI]
+      summary: AI failure analysis for a run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [runId]
+              properties:
+                runId: { type: string, format: uuid }
+                feature:
+                  type: string
+                  enum: [failure_analysis, summary, a11y_fix, seo_fix, performance]
+                  default: failure_analysis
+      responses:
+        "200":
+          description: Structured AI suggestion
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AISuggestion" }
+
+  /plugins:
+    get:
+      tags: [Plugins]
+      summary: List installed plugins
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Plugin" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 7807 problem detail
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string, example: SCENARIO_NOT_FOUND }
+        traceId: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              message: { type: string }
+
+    PageMeta:
+      type: object
+      properties:
+        nextCursor: { type: string, nullable: true }
+        hasMore: { type: boolean }
+
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        teamId: { type: string, format: uuid }
+        name: { type: string }
+        baseUrl: { type: string, nullable: true }
+        environment: { type: string, enum: [prod, staging, local, custom] }
+        tags: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ProjectCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        baseUrl: { type: string }
+        environment: { type: string, enum: [prod, staging, local, custom], default: prod }
+        tags: { type: array, items: { type: string } }
+    ProjectUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        baseUrl: { type: string }
+        environment: { type: string, enum: [prod, staging, local, custom] }
+        tags: { type: array, items: { type: string } }
+    ProjectEnvelope:
+      type: object
+      properties:
+        data: { $ref: "#/components/schemas/Project" }
+    ProjectPage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Project" } }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+
+    ScenarioDefinition:
+      type: object
+      description: Canonical Scenario JSON (schema flowpilot.scenario/v1)
+      required: [schema, steps]
+      properties:
+        schema: { type: string, const: "flowpilot.scenario/v1" }
+        name: { type: string }
+        type: { type: string, enum: [test, audit, crawl, screenshot, composite] }
+        variables: { type: object, additionalProperties: true }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, action]
+            properties:
+              id: { type: string }
+              action: { type: string, enum: [navigate, click, fill, assert, wait, screenshot, script] }
+              url: { type: string }
+              locator: { type: object, additionalProperties: true }
+              text: { type: string }
+              type: { type: string }
+              value: { type: string }
+              retry:
+                type: object
+                properties:
+                  max: { type: integer }
+                  backoffMs: { type: integer }
+        on: { type: object, additionalProperties: true }
+    Scenario:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        name: { type: string }
+        type: { type: string, enum: [test, audit, crawl, screenshot, composite] }
+        currentVersion: { type: integer }
+        definition: { $ref: "#/components/schemas/ScenarioDefinition" }
+    ScenarioCreate:
+      type: object
+      required: [projectId, name, definition]
+      properties:
+        projectId: { type: string, format: uuid }
+        name: { type: string }
+        type: { type: string, enum: [test, audit, crawl, screenshot, composite], default: test }
+        definition: { $ref: "#/components/schemas/ScenarioDefinition" }
+    ScenarioEnvelope:
+      type: object
+      properties:
+        data: { $ref: "#/components/schemas/Scenario" }
+    ScenarioPage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Scenario" } }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+    ScenarioVersionEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            scenarioId: { type: string, format: uuid }
+            version: { type: integer }
+            checksum: { type: string }
+
+    RunCreate:
+      type: object
+      required: [scenarioId]
+      properties:
+        scenarioId: { type: string, format: uuid }
+        browser: { type: string, enum: [chromium, firefox, webkit], default: chromium }
+        profileId: { type: string, format: uuid }
+        environment: { type: string, enum: [prod, staging, local, custom] }
+        parallelism: { type: integer, minimum: 1, default: 1 }
+    Run:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        scenarioId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, passed, failed, error, canceled] }
+        trigger: { type: string, enum: [manual, schedule, api, ci] }
+        eventsUrl: { type: string }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        durationMs: { type: integer, nullable: true }
+        summary:
+          type: object
+          properties:
+            passed: { type: integer }
+            failed: { type: integer }
+        createdAt: { type: string, format: date-time }
+    RunEnvelope:
+      type: object
+      properties:
+        data: { $ref: "#/components/schemas/Run" }
+
+    LogEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        source: { type: string }
+        level: { type: string }
+        stepIndex: { type: integer, nullable: true }
+        message: { type: string }
+        ts: { type: string, format: date-time }
+    LogPage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/LogEntry" } }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+
+    PerformanceMetric:
+      type: object
+      properties:
+        url: { type: string }
+        ttfbMs: { type: number }
+        fcpMs: { type: number }
+        lcpMs: { type: number }
+        cls: { type: number }
+        inpMs: { type: number }
+        domReadyMs: { type: number }
+        loadMs: { type: number }
+        requestsTotal: { type: integer }
+        requestsFailed: { type: integer }
+        transferBytes: { type: integer }
+        jsHeapBytes: { type: integer }
+
+    ReportCreate:
+      type: object
+      required: [runId, format]
+      properties:
+        runId: { type: string, format: uuid }
+        format: { type: string, enum: [pdf, excel, html, json] }
+        template: { type: string, default: default }
+        branding: { type: object, additionalProperties: true }
+    ReportEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [queued, generating, ready, failed] }
+            downloadUrl: { type: string, nullable: true }
+
+    ScheduleCreate:
+      type: object
+      required: [projectId, scenarioId, cron, timezone]
+      properties:
+        projectId: { type: string, format: uuid }
+        scenarioId: { type: string, format: uuid }
+        cron: { type: string, example: "0 */6 * * *" }
+        timezone: { type: string, example: "UTC" }
+        enabled: { type: boolean, default: true }
+        notify: { type: object, additionalProperties: true }
+    Schedule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        scenarioId: { type: string, format: uuid }
+        cron: { type: string }
+        timezone: { type: string }
+        enabled: { type: boolean }
+        nextRunAt: { type: string, format: date-time, nullable: true }
+        lastRunAt: { type: string, format: date-time, nullable: true }
+    ScheduleEnvelope:
+      type: object
+      properties:
+        data: { $ref: "#/components/schemas/Schedule" }
+    SchedulePage:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Schedule" } }
+        meta: { $ref: "#/components/schemas/PageMeta" }
+
+    AISuggestion:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            feature: { type: string }
+            provider: { type: string }
+            model: { type: string }
+            rootCause: { type: string }
+            suggestions:
+              type: array
+              items:
+                type: object
+                properties:
+                  title: { type: string }
+                  severity: { type: string, enum: [critical, high, medium, low, info] }
+                  detail: { type: string }
+                  fixSnippet: { type: string, nullable: true }
+            tokensIn: { type: integer }
+            tokensOut: { type: integer }
+
+    Plugin:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: string }
+        source: { type: string, enum: [builtin, marketplace, local] }
+        enabled: { type: boolean }
+        permissions: { type: array, items: { type: string } }
