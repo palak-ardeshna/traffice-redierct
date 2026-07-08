@@ -106,7 +106,8 @@
       const url = baseUrl + '/' + l.slug;
       return '<div class="link"><div class="u">' + url + '</div>' +
         '<div class="d">→ ' + l.destUrl + '</div>' +
-        '<div class="d">' + l.clicks + ' clicks · ' + l.uniqueVisitors + ' new · ' + l.adViews + ' ad views</div>' +
+        '<div class="d">' + l.clicks + ' clicks · ' + l.uniqueVisitors + ' new · ' +
+          l.adScriptViews + ' ad impressions · ' + l.directLinkClicks + ' direct opens</div>' +
         '<div class="actions">' +
         '<button class="sm" onclick="copy(\'' + url + '\')">Copy</button>' +
         '<button class="sm del" onclick="del(\'' + l.slug + '\')">Delete</button>' +

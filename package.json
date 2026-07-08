@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Monetized redirect links — Vercel serverless app + Railway Redis",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
   "dependencies": {
     "ioredis": "^5.4.1"
   }
