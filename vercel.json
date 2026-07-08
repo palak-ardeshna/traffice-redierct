@@ -1,7 +1,0 @@
-{
-  "rewrites": [
-    { "source": "/:slug/go", "destination": "/api/handler?slug=:slug&action=go" },
-    { "source": "/:slug/adview", "destination": "/api/handler?slug=:slug&action=adview" },
-    { "source": "/:slug", "destination": "/api/handler?slug=:slug" }
-  ]
-}
